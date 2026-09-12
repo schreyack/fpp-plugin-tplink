@@ -8,7 +8,7 @@ CXX ?= c++
 CXXFLAGS ?= -std=c++17 -O1 -g -Wall -Wextra -Werror
 CORE := ../src/core
 
-SOURCES := tplink_tests.cpp SequenceTests.cpp ProtocolTests.cpp FakeKasaPlug.cpp \
+SOURCES := tplink_tests.cpp SequenceTests.cpp GiveUpTests.cpp ProtocolTests.cpp FakeKasaPlug.cpp \
            $(CORE)/KasaProtocol.cpp $(CORE)/KasaSocket.cpp $(CORE)/MiniJson.cpp $(CORE)/RelaySender.cpp
 HEADERS := TestHarness.h FakeKasaPlug.h $(CORE)/KasaProtocol.h $(CORE)/MiniJson.h \
            $(CORE)/RelayFollower.h $(CORE)/RelaySender.h $(CORE)/SequenceRelay.h

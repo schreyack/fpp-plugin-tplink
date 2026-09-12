@@ -6,6 +6,7 @@
 #include "core/SequenceRelay.h"
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 
 class BaseSwitch : virtual public BaseItem {
@@ -44,6 +45,7 @@ protected:
 
 private:
     bool sendForSequence(bool on, std::atomic<bool> const& stop);
+    void gaveUpForSequence(bool on, unsigned tries, std::chrono::milliseconds window);
 
     std::unique_ptr<tplink::SequenceRelay> m_sequence;
     unsigned m_failedTries = 0;  // sender thread only

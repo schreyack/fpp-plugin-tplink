@@ -13,8 +13,9 @@ namespace tplink {
 class SequenceRelay {
 public:
     explicit SequenceRelay(RelaySender::SendFn send,
-                           RelaySender::Timing timing = RelaySender::defaultTiming())
-        : m_sender(std::move(send), timing) {}
+                           RelaySender::Timing timing = RelaySender::defaultTiming(),
+                           RelaySender::GiveUpFn onGiveUp = RelaySender::GiveUpFn())
+        : m_sender(std::move(send), timing, std::move(onGiveUp)) {}
 
     void start() { m_sender.start(); }
 

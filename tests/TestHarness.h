@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -80,8 +81,12 @@ inline bool waitUntil(std::function<bool()> const& done, std::chrono::millisecon
     return true;
 }
 
+inline long long msBetween(Clock::time_point from, Clock::time_point to) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+}
+
 inline long long msSince(Clock::time_point start) {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
+    return msBetween(start, Clock::now());
 }
 
 // Feeds `count` frames of one channel value, at a fast show's pace.
@@ -142,6 +147,49 @@ private:
     std::string m_childId;  // sender thread only
 };
 
+// Records when each send was tried, and for which state, in front of a real
+// send function.
+class AttemptLog {
+public:
+    struct Attempt {
+        Clock::time_point at;
+        bool on;
+    };
+
+    RelaySender::SendFn wrap(RelaySender::SendFn inner) {
+        return [this, inner](bool on, std::atomic<bool> const& stop) {
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_attempts.push_back(Attempt{Clock::now(), on});
+            }
+            return inner(on, stop);
+        };
+    }
+
+    std::vector<Attempt> attempts() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_attempts;
+    }
+
+    size_t size() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_attempts.size();
+    }
+
+    size_t count(bool on) const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        size_t n = 0;
+        for (auto const& attempt : m_attempts) {
+            n += attempt.on == on ? 1 : 0;
+        }
+        return n;
+    }
+
+private:
+    mutable std::mutex m_mutex;
+    std::vector<Attempt> m_attempts;
+};
+
 // ProtocolTests.cpp
 void testFramingMatchesThePlugProtocol();
 void testStripOutletCommandCarriesItsChildId();
@@ -158,3 +206,8 @@ void testNewerStateSupersedesThePendingRetry();
 void testFramePathDoesNotAllocateOrWaitOnThePlug();
 void testStopIsPrompt();
 void testAThrowingSendIsRetriedNotLatched();
+
+// GiveUpTests.cpp
+void testRetriesStopOnceTheWindowHasPassed();
+void testAfterGivingUpTheNextChangeIsSentAtOnce();
+void testANewerRequestStartsAgainFromTheFirstRetryDelay();
