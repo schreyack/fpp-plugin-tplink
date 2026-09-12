@@ -74,7 +74,31 @@ public:
         registerCommand();
     }
     virtual ~TPLinkPlugin() {
+        stopSequenceControl();
         _TPLinkOutputs.clear();
+    }
+
+#if defined(FPP_PLUGIN_API_VERSION) && FPP_PLUGIN_API_VERSION >= 6
+    // FPP calls this before destroying the plugin, once nothing calls in any more.
+    std::function<bool()> shutdown() override {
+        stopSequenceControl();
+        return nullptr;
+    }
+#endif
+
+    // Stops every plug's sequence sender: all are told first, then each is
+    // waited for, so one slow plug does not hold up telling the rest.
+    void stopSequenceControl() {
+        for (auto& output : _TPLinkOutputs) {
+            if (auto* sw = dynamic_cast<BaseSwitch*>(output.get())) {
+                sw->RequestStopSequenceControl();
+            }
+        }
+        for (auto& output : _TPLinkOutputs) {
+            if (auto* sw = dynamic_cast<BaseSwitch*>(output.get())) {
+                sw->StopSequenceControl();
+            }
+        }
     }
 
     class TPLinkSetSwitchCommand : public Command {
@@ -445,13 +469,13 @@ public:
         }
     }    
 
+    // Runs on fppd's output thread for every frame. Each output's SendData is a
+    // compare, plus a hand-off or a thread start when its value changes, so a
+    // plain loop is all this needs.
     void sendChannelData(unsigned char *data) {
-        //for(auto & output: _TPLinkOutputs) {
-        //    output->SendData(data);
-        //}
-        std::for_each(std::execution::par, std::begin(_TPLinkOutputs), std::end(_TPLinkOutputs), [data](auto& output) {
+        for (auto& output : _TPLinkOutputs) {
             output->SendData(data);
-        });
+        }
     }
 
     void turnSwitchesOff() {
@@ -615,6 +639,10 @@ public:
                         tplinkItem = std::make_unique<TPLinkLight>(ip, sc);
                     }
                     LogInfo(VB_PLUGIN, "Added %s\n", tplinkItem->GetConfigString().c_str());
+                    if (auto* sw = dynamic_cast<BaseSwitch*>(tplinkItem.get())) {
+                        // A plug with a start channel follows it; see BaseSwitch::SendData.
+                        sw->StartSequenceControl();
+                    }
                     _TPLinkOutputs.push_back(std::move(tplinkItem));
                 }
             }
