@@ -58,7 +58,7 @@ bool BaseSwitch::SendData( unsigned char *data) {
 }
 
 void BaseSwitch::StartSequenceControl() {
-    if (m_startChannel == 0 || m_sequence) {
+    if (m_sequence) {
         return;
     }
     try {
@@ -84,6 +84,12 @@ void BaseSwitch::RequestStopSequenceControl() {
 void BaseSwitch::StopSequenceControl() {
     if (m_sequence) {
         m_sequence->stop();
+    }
+}
+
+void BaseSwitch::requestState(bool on) {
+    if (m_sequence) {
+        m_sequence->commandRequest(on);
     }
 }
 

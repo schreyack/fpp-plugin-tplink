@@ -16,6 +16,7 @@
 #include <istream>
 #include <ostream>
 #include <iostream>
+#include <map>
 #include <thread>
 #include <vector>
 
@@ -57,6 +58,9 @@
 #include "TapoLight.h"
 #include "TapoSwitch.h"
 
+#include "core/KasaProtocol.h"
+#include "core/RelaySender.h"
+
 #define LIGHT_TYPES {"tplink", "tasmota", "govee", "tapo"}
 #define SWITCH_TYPES {"tplink", "tasmota", "tapo"}
 
@@ -69,6 +73,39 @@ private:
     // Commands registered with CommandManager. addCommand() does not take
     // ownership, so these are withdrawn and deleted again in shutdown().
     std::vector<Command*> _commands;
+    // Set at shutdown so detached toggle threads give up promptly.
+    std::atomic<bool> m_shuttingDown{false};
+
+    // Ad-hoc senders for IPs that are not in the config. One sender per
+    // IP:plug_num, newest-wins, one attempt (no retry). Stopped at shutdown.
+    struct AdHocSender {
+        tplink::RelaySender sender;
+        AdHocSender(std::string const& ip, int plugNum)
+            : sender(makeSendFn(ip, plugNum),
+                     tplink::RelaySender::Timing{250ms, 250ms, 0ms}) {
+            sender.start();
+        }
+        static tplink::RelaySender::SendFn makeSendFn(std::string ip, int plugNum) {
+            return [ip = std::move(ip), plugNum](bool on, std::atomic<bool> const& stop) -> bool {
+                tplink::kasa::QueryOptions options;
+                options.cancel = &stop;
+                std::string childId;
+                if (plugNum != 0) {
+                    std::string sysinfo;
+                    if (tplink::kasa::query(ip, tplink::kasa::kDefaultPort,
+                                            tplink::kasa::sysinfoCommand(plugNum), sysinfo, options)) {
+                        childId = tplink::kasa::idFromSysinfo(sysinfo, plugNum);
+                    }
+                }
+                std::string cmd = tplink::kasa::addressedCommand(
+                    tplink::kasa::relayStateCommand(on), plugNum, childId);
+                std::string reply;
+                return tplink::kasa::query(ip, tplink::kasa::kDefaultPort, cmd, reply, options) && !reply.empty();
+            };
+        }
+    };
+    std::mutex m_adHocMutex;
+    std::map<std::string, std::unique_ptr<AdHocSender>> m_adHocSenders;
 
 public:
     TPLinkPlugin() : FPPPlugin("fpp-plugin-tplink") {
@@ -78,6 +115,7 @@ public:
     }
     virtual ~TPLinkPlugin() {
         stopSequenceControl();
+        stopAdHocSenders();
         _TPLinkOutputs.clear();
     }
 
@@ -94,6 +132,34 @@ public:
                 sw->StopSequenceControl();
             }
         }
+    }
+
+    void stopAdHocSenders() {
+        std::lock_guard<std::mutex> lock(m_adHocMutex);
+        for (auto& pair : m_adHocSenders) {
+            pair.second->sender.requestStop();
+        }
+        for (auto& pair : m_adHocSenders) {
+            pair.second->sender.stop();
+        }
+        m_adHocSenders.clear();
+    }
+
+    // Finds a configured switch by IP and plug number.
+    BaseSwitch* findConfiguredSwitch(std::string const& ip, int plug_num) {
+        for (auto& output : _TPLinkOutputs) {
+            if (output->GetIPAddress() != ip) continue;
+            auto* sw = dynamic_cast<BaseSwitch*>(output.get());
+            if (!sw) continue;
+            // TPLinkSwitch and TasmotaSwitch expose m_plug_num through
+            // BaseSwitch. Match on it.
+            // For simplicity, match any switch at this IP when plug_num is 0
+            // (single-outlet plug).
+            if (plug_num == 0 || sw->plugNumber() == plug_num) {
+                return sw;
+            }
+        }
+        return nullptr;
     }
 
     class TPLinkSetSwitchCommand : public Command {
@@ -154,9 +220,19 @@ public:
             if (args.size() >= 4) {
                 switch_type = args[3];
             }
-            plugin->SetSwitchState(ipAddress, false, plug_num, switch_type);
-            std::this_thread::sleep_for(delay);
-            plugin->SetSwitchState(ipAddress, true, plug_num, switch_type);
+            // Run the off-sleep-on cycle on a detached thread so the
+            // command returns to the caller immediately.
+            std::thread([p = plugin, ip = ipAddress, pn = plug_num, st = switch_type, delay]() {
+                if (p->m_shuttingDown.load()) return;
+                p->SetSwitchState(ip, false, pn, st);
+                auto deadline = std::chrono::steady_clock::now() + delay;
+                while (std::chrono::steady_clock::now() < deadline) {
+                    if (p->m_shuttingDown.load()) return;
+                    std::this_thread::sleep_for(50ms);
+                }
+                if (p->m_shuttingDown.load()) return;
+                p->SetSwitchState(ip, true, pn, st);
+            }).detach();
             return std::make_unique<Command::Result>("TPLink Switch Toggle");
         }
         TPLinkPlugin *plugin;
@@ -402,9 +478,17 @@ public:
             if (args.size() >= 1) {
                 delay = std::chrono::milliseconds(std::stoi(args[0]));
             }
-            plugin->turnSwitchesOff();
-            std::this_thread::sleep_for(delay);
-            plugin->turnSwitchesOn();
+            std::thread([p = plugin, delay]() {
+                if (p->m_shuttingDown.load()) return;
+                p->turnSwitchesOff();
+                auto deadline = std::chrono::steady_clock::now() + delay;
+                while (std::chrono::steady_clock::now() < deadline) {
+                    if (p->m_shuttingDown.load()) return;
+                    std::this_thread::sleep_for(50ms);
+                }
+                if (p->m_shuttingDown.load()) return;
+                p->turnSwitchesOn();
+            }).detach();
             return std::make_unique<Command::Result>("TPLink All Switches Toggle");
         }
         TPLinkPlugin *plugin;
@@ -436,7 +520,9 @@ public:
     // back into this object, so ask FPP to hold off destroying the object
     // long enough for those to drain.
     virtual std::function<bool()> shutdown() override {
+        m_shuttingDown.store(true);
         stopSequenceControl();
+        stopAdHocSenders();
         for (Command* c : _commands) {
             CommandManager::INSTANCE.removeCommand(c);
             delete c;
@@ -496,23 +582,23 @@ public:
     }
 
     void turnSwitchesOff() {
-        std::for_each(std::execution::par, std::begin(_TPLinkOutputs), std::end(_TPLinkOutputs), [](auto& output) {
+        for (auto& output : _TPLinkOutputs) {
             auto* derived = dynamic_cast<BaseSwitch*>(output.get());
             if (derived) {
                 derived->EnableOutput();
-                derived->setRelayOff();
+                derived->requestState(false);
             }
-        });
+        }
     }
 
     void turnSwitchesOn() {
-        std::for_each(std::execution::par, std::begin(_TPLinkOutputs), std::end(_TPLinkOutputs), [](auto& output) {
+        for (auto& output : _TPLinkOutputs) {
             auto* derived = dynamic_cast<BaseSwitch*>(output.get());
             if (derived) {
                 derived->EnableOutput();
-                derived->setRelayOn();
+                derived->requestState(true);
             }
-        });
+        }
     }
 
     void turnLightsRGB(uint8_t r, uint8_t g, uint8_t b, int color_temp, int period) {
@@ -681,6 +767,28 @@ public:
 
         auto SetSwState = [this,state,plug_num,type](std::string const& __ip)
         {
+            // If this IP+plug is in the config, hand the state to its sender.
+            BaseSwitch* configured = findConfiguredSwitch(__ip, plug_num);
+            if (configured) {
+                configured->EnableOutput();
+                configured->requestState(state);
+                return;
+            }
+            // Not configured. For TPLink (Kasa) switches, use an ad-hoc
+            // sender so the command returns instantly. Other types keep
+            // their existing synchronous path.
+            if (type.empty() || type.find("tplink") != std::string::npos) {
+                std::string key = __ip + ":" + std::to_string(plug_num);
+                std::lock_guard<std::mutex> lock(m_adHocMutex);
+                auto it = m_adHocSenders.find(key);
+                if (it == m_adHocSenders.end()) {
+                    it = m_adHocSenders.emplace(key,
+                        std::make_unique<AdHocSender>(__ip, plug_num)).first;
+                }
+                it->second->sender.request(state);
+                return;
+            }
+            // Tapo/Tasmota: existing synchronous path (not fixed here).
             auto sswitch = getSwitchDevicePtr(type, __ip, 1, plug_num);
             auto* derived = dynamic_cast<BaseSwitch*>(sswitch.get());
             if (derived) {

@@ -38,6 +38,13 @@ public:
     // Called when a new playlist starts.
     void reset() { m_follower.reset(); }
 
+    // A command (FPP command API, not a channel value) asks for a state
+    // directly. It bypasses the follower and goes straight to the sender.
+    // Note: a plug with a start channel will still be driven by the sequence
+    // on the next frame (that is the ownership rule). Command plugs should
+    // use start channel 0.
+    void commandRequest(bool on) { m_sender.request(on); }
+
     void requestStop() { m_sender.requestStop(); }
     void stop() { m_sender.stop(); }
 

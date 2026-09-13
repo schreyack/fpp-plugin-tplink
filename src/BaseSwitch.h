@@ -22,7 +22,9 @@ public:
     void EnableOutput() override;
 
     // Starts this plug's sender. The plugin calls it once for each configured
-    // switch; a start channel of 0 leaves the plug to commands only.
+    // switch. A start channel of 0 means the plug is commands-only: it still
+    // gets a sender thread (so commands are non-blocking) but SendData does
+    // nothing.
     void StartSequenceControl();
     // Tells the sender to stop without waiting for it.
     void RequestStopSequenceControl();
@@ -31,11 +33,18 @@ public:
     // sender thread calls into the derived object.
     void StopSequenceControl();
 
+    // Hands a command-requested state to this plug's sender. Returns
+    // immediately; the sender delivers it on its own thread with retry.
+    // Does nothing if the sender has not been started.
+    void requestState(bool on);
+
     virtual bool setRelayOn() = 0;
     virtual bool setRelayOff() = 0;
 
     virtual bool setLedOn() = 0;
     virtual bool setLedOff() = 0;
+
+    int plugNumber() const { return m_plug_num; }
 
 protected:
     int m_plug_num;
