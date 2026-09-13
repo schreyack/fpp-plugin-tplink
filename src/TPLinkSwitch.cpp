@@ -12,7 +12,9 @@
 TPLinkSwitch::TPLinkSwitch(std::string const& ip, unsigned int startChannel, int plug_num) :
 BaseItem(ip,startChannel), TPLinkItem(ip,startChannel), BaseSwitch(ip,startChannel,plug_num)
 {
-    m_deviceId = getDeviceId(plug_num, nullptr);
+    // No network I/O here. The device id (only needed for multi-outlet
+    // strips, i.e. plug_num > 0) is fetched lazily the first time a
+    // command is sent, inside appendPlugData().
 }
 
 TPLinkSwitch::~TPLinkSwitch() {
@@ -22,8 +24,9 @@ TPLinkSwitch::~TPLinkSwitch() {
 
 std::string TPLinkSwitch::GetConfigString() const
 {
+    std::string id = deviceId();
     return "IP: " + GetIPAddress() + " Start Channel: " + std::to_string(GetStartChannel()) + " Device Type: " + GetType() +
-    " Plug Number: " + std::to_string(m_plug_num) + " Device ID: " + deviceId();
+    " Plug Number: " + std::to_string(m_plug_num) + " Device ID: " + (id.empty() ? "(not read yet)" : id);
 }
 
 std::string TPLinkSwitch::deviceId() const {
