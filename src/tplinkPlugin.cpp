@@ -549,7 +549,12 @@ public:
             { drogon::Get });
     }
 
-    virtual void modifySequenceData(int ms, uint8_t *seqData) override {
+    // Plugs follow the channel data FPP is about to SEND, after pixel overlays
+    // (modifyChannelData), not the raw sequence (modifySequenceData, which runs
+    // before overlays). So an overlay model on a plug's channels holds that plug
+    // exactly as it holds a light: a house controller can keep effect plugs off
+    // for a night by setting the model's state, without editing the sequence.
+    virtual void modifyChannelData(int ms, uint8_t *seqData) override {
         try
         {
             sendChannelData(seqData);
