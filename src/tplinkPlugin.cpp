@@ -107,10 +107,62 @@ private:
     std::mutex m_adHocMutex;
     std::map<std::string, std::unique_ptr<AdHocSender>> m_adHocSenders;
 
+    // --- Effects hold ---
+    // When held, the plugin treats the effect plugs' channels as zero in
+    // sendChannelData, preventing the show's effect cues from switching
+    // the plugs. The hold defaults to ON (fail safe: effects do not fire)
+    // and survives restarts via a state file. The house controller sets it
+    // through the /TPLink/effects-hold API or the FPP Command.
+    std::atomic<bool> m_effectsHeld{true};
+
+    // The 0-based channel indices that are held. Populated at startup from
+    // configured switches whose 1-based start channel is non-zero.
+    std::vector<unsigned int> m_effectPlugIndices;
+
+    static std::string effectsHeldPath() {
+#if FPP_MAJOR_VERSION < 6
+        return "/home/fpp/media/config/fpp-plugin-tplink-effects-held";
+#else
+        return std::string(FPP_DIR_CONFIG("/fpp-plugin-tplink-effects-held"));
+#endif
+    }
+
+    void loadEffectsHeld() {
+        try {
+            std::ifstream f(effectsHeldPath());
+            if (f.is_open()) {
+                std::string line;
+                if (std::getline(f, line)) {
+                    bool held = (line != "0");
+                    m_effectsHeld.store(held, std::memory_order_relaxed);
+                    LogInfo(VB_PLUGIN, "Effects hold loaded: %s\n", held ? "held" : "released");
+                    return;
+                }
+            }
+        } catch (...) {}
+        // Missing or unreadable: default to held (fail safe).
+        m_effectsHeld.store(true, std::memory_order_relaxed);
+        LogInfo(VB_PLUGIN, "Effects hold state file missing or unreadable; defaulting to held\n");
+    }
+
+    bool saveEffectsHeld(bool held) {
+        try {
+            std::ofstream f(effectsHeldPath());
+            if (f.is_open()) {
+                f << (held ? "1" : "0") << "\n";
+                f.close();
+                return true;
+            }
+        } catch (...) {}
+        LogInfo(VB_PLUGIN, "Could not save effects hold state\n");
+        return false;
+    }
+
 public:
     TPLinkPlugin() : FPPPlugin("fpp-plugin-tplink") {
         LogInfo(VB_PLUGIN, "Initializing TP-Link Plugin\n");
         readFiles();
+        loadEffectsHeld();
         registerCommand();
     }
     virtual ~TPLinkPlugin() {
@@ -162,15 +214,26 @@ public:
         return nullptr;
     }
 
+    // --- Effects hold public API ---
+    bool isEffectsHeld() const {
+        return m_effectsHeld.load(std::memory_order_relaxed);
+    }
+
+    void setEffectsHeld(bool held) {
+        m_effectsHeld.store(held, std::memory_order_relaxed);
+        saveEffectsHeld(held);
+        LogInfo(VB_PLUGIN, "Effects hold set to: %s\n", held ? "held" : "released");
+    }
+
     class TPLinkSetSwitchCommand : public Command {
     public:
         TPLinkSetSwitchCommand(TPLinkPlugin *p) : Command("TPLink Set Switch"), plugin(p) {
-            args.push_back(CommandArg("IP", "string", "IP Address"));            
+            args.push_back(CommandArg("IP", "string", "IP Address"));
             args.push_back(CommandArg("state", "bool", "Set Switch On or Off").setDefaultValue("true"));
             args.push_back(CommandArg("plug", "int", "Set Plug Number").setRange(0, 255).setDefaultValue("0"));
             args.push_back(CommandArg("type", "string", "Switch Type").setContentList(SWITCH_TYPES).setDefaultValue("tplink"));
         }
-        
+
         virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
             std::string ipAddress;
             bool bulbOn = true;
@@ -197,12 +260,12 @@ public:
      class TPLinkToggleSwitchCommand : public Command {
     public:
         TPLinkToggleSwitchCommand(TPLinkPlugin *p) : Command("TPLink Toggle Switch"), plugin(p) {
-            args.push_back(CommandArg("IP", "string", "IP Address"));            
+            args.push_back(CommandArg("IP", "string", "IP Address"));
             args.push_back(CommandArg("delay", "int", "Delay MS").setRange(1, 10000).setDefaultValue("100"));
             args.push_back(CommandArg("plug", "int", "Set Plug Number").setRange(0, 255).setDefaultValue("0"));
             args.push_back(CommandArg("type", "string", "Switch Type").setContentList(SWITCH_TYPES).setDefaultValue("tplink"));
         }
-        
+
         virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
             std::string ipAddress;
             std::chrono::milliseconds delay = 10ms;
@@ -249,7 +312,7 @@ public:
             args.push_back(CommandArg("period", "int", "Delay in ms").setRange(0, 30000).setDefaultValue("0"));
             args.push_back(CommandArg("type", "string", "Light Type").setContentList(LIGHT_TYPES).setDefaultValue("tplink"));
         }
-        
+
         virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
             std::string ipAddress;
             uint8_t r = 255;
@@ -296,7 +359,7 @@ public:
             args.push_back(CommandArg("period", "int", "Delay in ms").setRange(0, 30000).setDefaultValue("0"));
             args.push_back(CommandArg("type", "string", "Light Type").setContentList(LIGHT_TYPES).setDefaultValue("tplink"));
         }
-        
+
         virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
             std::string ipAddress;
             int hue = 1;
@@ -335,10 +398,10 @@ public:
     class TPLinkSetLightOffCommand : public Command {
     public:
         TPLinkSetLightOffCommand(TPLinkPlugin *p) : Command("TPLink Set Light Off"), plugin(p) {
-            args.push_back(CommandArg("IP", "string", "IP Address")); 
+            args.push_back(CommandArg("IP", "string", "IP Address"));
             args.push_back(CommandArg("type", "string", "Light Type").setContentList(LIGHT_TYPES).setDefaultValue("tplink"));
         }
-        
+
         virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
             std::string ipAddress;
             std::string light_type;
@@ -358,7 +421,7 @@ public:
     public:
         TPLinkAllSwitchesOffCommand(TPLinkPlugin *p) : Command("TPLink All Switches Off"), plugin(p) {
         }
-        
+
         virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
 
             plugin->turnSwitchesOff();
@@ -366,12 +429,12 @@ public:
         }
         TPLinkPlugin *plugin;
     };
-    
+
     class TPLinkAllSwitchesOnCommand : public Command {
     public:
         TPLinkAllSwitchesOnCommand(TPLinkPlugin *p) : Command("TPLink All Switches On"), plugin(p) {
         }
-        
+
         virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
 
             plugin->turnSwitchesOn();
@@ -389,7 +452,7 @@ public:
             args.push_back(CommandArg("color_temp", "int", "Color Temp").setRange(0, 9000).setDefaultValue("0"));
             args.push_back(CommandArg("period", "int", "Delay in ms").setRange(0, 30000).setDefaultValue("0"));
         }
-        
+
         virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
             uint8_t r = 255;
             uint8_t g = 255;
@@ -426,7 +489,7 @@ public:
             args.push_back(CommandArg("color_temp", "int", "Color Temp").setRange(0, 9000).setDefaultValue("0"));
             args.push_back(CommandArg("period", "int", "Delay in ms").setRange(0, 30000).setDefaultValue("0"));
         }
-        
+
         virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
             int hue = 1;
             int sat = 100;
@@ -458,7 +521,7 @@ public:
     public:
         TPLinkAllLightsOffCommand(TPLinkPlugin *p) : Command("TPLink All Lights Off"), plugin(p) {
         }
-        
+
         virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
 
             plugin->turnLightsOff();
@@ -472,7 +535,7 @@ public:
         TPLinkAllSwitchesToggleCommand(TPLinkPlugin *p) : Command("TPLink All Switches Toggle"), plugin(p) {
             args.push_back(CommandArg("delay", "int", "Delay MS").setRange(1, 10000).setDefaultValue("100"));
         }
-        
+
         virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
             std::chrono::milliseconds delay = 10ms;
             if (args.size() >= 1) {
@@ -494,6 +557,23 @@ public:
         TPLinkPlugin *plugin;
     };
 
+    // FPP Command: hold or release the effect plugs.
+    class TPLinkEffectsHoldCommand : public Command {
+    public:
+        TPLinkEffectsHoldCommand(TPLinkPlugin *p) : Command("TPLink Effects Hold"), plugin(p) {
+            args.push_back(CommandArg("held", "bool", "Hold effects off").setDefaultValue("true"));
+        }
+        virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
+            bool held = true;
+            if (args.size() >= 1) {
+                held = (args[0] == "true" || args[0] == "1");
+            }
+            plugin->setEffectsHeld(held);
+            return std::make_unique<Command::Result>(held ? "Effects held" : "Effects released");
+        }
+        TPLinkPlugin *plugin;
+    };
+
     void registerCommand() {
         _commands.push_back(new TPLinkSetSwitchCommand(this));
         _commands.push_back(new TPLinkToggleSwitchCommand(this));
@@ -506,6 +586,7 @@ public:
         _commands.push_back(new TPLinkAllLightsHSVCommand(this));
         _commands.push_back(new TPLinkAllLightsOffCommand(this));
         _commands.push_back(new TPLinkAllSwitchesToggleCommand(this));
+        _commands.push_back(new TPLinkEffectsHoldCommand(this));
         for (Command* c : _commands) {
             CommandManager::INSTANCE.addCommand(c);
         }
@@ -531,14 +612,46 @@ public:
         long long until = GetTimeMS() + 12000;
         return [until]() { return GetTimeMS() >= until; };
     }
-    
+
     void handleTopicsRequest(const HttpRequestPtr &req,
                               std::function<void(const HttpResponsePtr &)> &&callback) {
         callback(makeStringResponse(getTopics(), 200));
     }
 
+    void handleEffectsHoldRequest(const HttpRequestPtr &req,
+                                   std::function<void(const HttpResponsePtr &)> &&callback) {
+        if (req->getMethod() == drogon::Get) {
+            Json::Value resp;
+            resp["held"] = isEffectsHeld();
+            Json::StreamWriterBuilder wb;
+            wb["indentation"] = "";
+            callback(makeStringResponse(Json::writeString(wb, resp), 200, "application/json"));
+        } else if (req->getMethod() == drogon::Put || req->getMethod() == drogon::Post) {
+            Json::Value body;
+            Json::CharReaderBuilder rb;
+            std::string errs;
+            auto bodyView = req->getBody();
+            std::string bodyStr(bodyView.data(), bodyView.size());
+            std::istringstream ss(bodyStr);
+            if (Json::parseFromStream(rb, ss, &body, &errs) && body.isMember("held")) {
+                bool held = body["held"].asBool();
+                setEffectsHeld(held);
+                Json::Value resp;
+                resp["held"] = held;
+                Json::StreamWriterBuilder wb;
+                wb["indentation"] = "";
+                callback(makeStringResponse(Json::writeString(wb, resp), 200, "application/json"));
+            } else {
+                callback(makeStringResponse("{\"error\":\"expected JSON with a 'held' field\"}", 400, "application/json"));
+            }
+        } else {
+            callback(makeStringResponse("{\"error\":\"use GET or PUT\"}", 405, "application/json"));
+        }
+    }
+
     void unregisterApis() override {
         FPPPlugins::unregisterPluginApi("/TPLink");
+        FPPPlugins::unregisterPluginApi("/TPLink/effects-hold");
     }
     void registerApis() override {
         FPPPlugins::registerPluginApi(
@@ -547,13 +660,21 @@ public:
                 handleTopicsRequest(req, std::move(callback));
             },
             { drogon::Get });
+        FPPPlugins::registerPluginApi(
+            "/TPLink/effects-hold",
+            [this](const HttpRequestPtr &req, std::function<void(const HttpResponsePtr &)> &&callback) {
+                handleEffectsHoldRequest(req, std::move(callback));
+            },
+            { drogon::Get, drogon::Put, drogon::Post });
     }
 
     // Plugs follow the channel data FPP is about to SEND, after pixel overlays
     // (modifyChannelData), not the raw sequence (modifySequenceData, which runs
-    // before overlays). So an overlay model on a plug's channels holds that plug
-    // exactly as it holds a light: a house controller can keep effect plugs off
-    // for a night by setting the model's state, without editing the sequence.
+    // before overlays). While the effects hold is on, the plugin zeroes the
+    // effect plugs' channels before passing them to the switches, so the show's
+    // cues cannot fire those plugs. This replaces the old overlay-based gate,
+    // which kept FPP's channel output thread alive and caused dark frames to
+    // interleave with DMXLive's DDP output = blink.
     virtual void modifyChannelData(int ms, uint8_t *seqData) override {
         try
         {
@@ -568,21 +689,50 @@ public:
     virtual void playlistCallback(const Json::Value &playlist, const std::string &action, const std::string &section, int item) {
         if (settings["Start"] == "PlaylistStart" && action == "start") {
             EnableTPLinkItems();
-        }  
+        }
     }
 
     void EnableTPLinkItems() {
         for(auto & output: _TPLinkOutputs) {
             output->EnableOutput();
         }
-    }    
+    }
 
     // Runs on fppd's output thread for every frame. Each output's SendData is a
     // compare, plus a hand-off or a thread start when its value changes, so a
     // plain loop is all this needs.
+    //
+    // When effects are held, the effect plugs' channels are temporarily zeroed
+    // in the data buffer so every switch sees 0 and stays off. The buffer is
+    // restored afterwards so downstream plugins are unaffected.
     void sendChannelData(unsigned char *data) {
+        bool const held = m_effectsHeld.load(std::memory_order_relaxed);
+        // Save and zero the effect plug channels while held.
+        uint8_t saved[8];
+        unsigned int savedCount = 0;
+        if (held && !m_effectPlugIndices.empty()) {
+            for (unsigned int idx : m_effectPlugIndices) {
+                if (savedCount < sizeof(saved)) {
+                    saved[savedCount] = data[idx];
+                    data[idx] = 0;
+                    ++savedCount;
+                }
+            }
+        }
+
         for (auto& output : _TPLinkOutputs) {
             output->SendData(data);
+        }
+
+        // Restore the original channel values.
+        if (savedCount > 0) {
+            unsigned int i = 0;
+            for (unsigned int idx : m_effectPlugIndices) {
+                if (i < savedCount) {
+                    data[idx] = saved[i];
+                    ++i;
+                }
+            }
         }
     }
 
@@ -637,7 +787,7 @@ public:
             }
         });
     }
-    
+
     void saveDataToFile()
     {
         std::ofstream outfile;
@@ -710,7 +860,7 @@ public:
 
     void readFiles()
     {
-        //read topic, payload and start channel settings from JSON setting file. 
+        //read topic, payload and start channel settings from JSON setting file.
 #if FPP_MAJOR_VERSION < 6
         std::string configLocation = ("/home/fpp/media/config/plugin.tplink.json");
 #else
@@ -756,8 +906,25 @@ public:
             }
         }
         saveDataToFile();
+
+        // Build the list of effect plug channel indices (0-based). A switch
+        // with a non-zero start channel that falls in the effect plug range
+        // is held when the effects hold is active.
+        m_effectPlugIndices.clear();
+        for (auto& output : _TPLinkOutputs) {
+            unsigned int sc = output->GetStartChannel();
+            if (sc != 0 && dynamic_cast<BaseSwitch*>(output.get())) {
+                m_effectPlugIndices.push_back(sc - 1);  // 0-based index
+            }
+        }
+        if (!m_effectPlugIndices.empty()) {
+            LogInfo(VB_PLUGIN, "Effect plug channels (1-based):");
+            for (unsigned int idx : m_effectPlugIndices) {
+                LogInfo(VB_PLUGIN, "  %u\n", idx + 1);
+            }
+        }
     }
-    
+
     std::string getTopics()
     {
         std::string topics;
@@ -766,7 +933,7 @@ public:
             topics += ",";
         }
         return topics;
-    } 
+    }
 
     void SetSwitchState(std::string const& ip, bool state, int plug_num, std::string const& type) {
 
