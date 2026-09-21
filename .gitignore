@@ -35,3 +35,6 @@
 # Unit test binary
 tests/tplink_tests
 tests/*.dSYM/
+
+# Python venv made by scripts/fpp_install.sh (kept out of git so an FPP upgrade never cleans it away)
+env/
