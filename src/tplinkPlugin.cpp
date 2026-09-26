@@ -58,6 +58,7 @@
 #include "TapoLight.h"
 #include "TapoSwitch.h"
 
+#include "core/EffectsHold.h"
 #include "core/KasaProtocol.h"
 #include "core/RelaySender.h"
 
@@ -115,9 +116,10 @@ private:
     // through the /TPLink/effects-hold API or the FPP Command.
     std::atomic<bool> m_effectsHeld{true};
 
-    // The 0-based channel indices that are held. Populated at startup from
-    // configured switches whose 1-based start channel is non-zero.
-    std::vector<unsigned int> m_effectPlugIndices;
+    // The channels that are held (0-based) and the work on a frame. Populated at
+    // startup from configured switches whose 1-based start channel is non-zero,
+    // however many there are (src/core/EffectsHold.h).
+    tplink::EffectsHold m_effectsHold;
 
     static std::string effectsHeldPath() {
 #if FPP_MAJOR_VERSION < 6
@@ -704,36 +706,14 @@ public:
     //
     // When effects are held, the effect plugs' channels are temporarily zeroed
     // in the data buffer so every switch sees 0 and stays off. The buffer is
-    // restored afterwards so downstream plugins are unaffected.
+    // restored afterwards so downstream plugins are unaffected. Every effect plug
+    // is held, however many there are (src/core/EffectsHold.h).
     void sendChannelData(unsigned char *data) {
-        bool const held = m_effectsHeld.load(std::memory_order_relaxed);
-        // Save and zero the effect plug channels while held.
-        uint8_t saved[8];
-        unsigned int savedCount = 0;
-        if (held && !m_effectPlugIndices.empty()) {
-            for (unsigned int idx : m_effectPlugIndices) {
-                if (savedCount < sizeof(saved)) {
-                    saved[savedCount] = data[idx];
-                    data[idx] = 0;
-                    ++savedCount;
-                }
+        m_effectsHold.apply(data, m_effectsHeld.load(std::memory_order_relaxed), [this](uint8_t* frame) {
+            for (auto& output : _TPLinkOutputs) {
+                output->SendData(frame);
             }
-        }
-
-        for (auto& output : _TPLinkOutputs) {
-            output->SendData(data);
-        }
-
-        // Restore the original channel values.
-        if (savedCount > 0) {
-            unsigned int i = 0;
-            for (unsigned int idx : m_effectPlugIndices) {
-                if (i < savedCount) {
-                    data[idx] = saved[i];
-                    ++i;
-                }
-            }
-        }
+        });
     }
 
     void turnSwitchesOff() {
@@ -910,16 +890,17 @@ public:
         // Build the list of effect plug channel indices (0-based). A switch
         // with a non-zero start channel that falls in the effect plug range
         // is held when the effects hold is active.
-        m_effectPlugIndices.clear();
+        std::vector<unsigned int> effectPlugChannels;
         for (auto& output : _TPLinkOutputs) {
             unsigned int sc = output->GetStartChannel();
             if (sc != 0 && dynamic_cast<BaseSwitch*>(output.get())) {
-                m_effectPlugIndices.push_back(sc - 1);  // 0-based index
+                effectPlugChannels.push_back(sc - 1);  // 0-based index
             }
         }
-        if (!m_effectPlugIndices.empty()) {
+        m_effectsHold.setChannels(std::move(effectPlugChannels));
+        if (!m_effectsHold.channels().empty()) {
             LogInfo(VB_PLUGIN, "Effect plug channels (1-based):");
-            for (unsigned int idx : m_effectPlugIndices) {
+            for (unsigned int idx : m_effectsHold.channels()) {
                 LogInfo(VB_PLUGIN, "  %u\n", idx + 1);
             }
         }
