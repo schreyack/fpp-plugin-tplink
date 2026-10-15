@@ -36,7 +36,7 @@ std::string TPLinkItem::sendCmd(std::string const& cmd, std::atomic<bool> const*
     }
     m_issending = false;
     if (!ok) {
-        LogDebug(VB_PLUGIN, "TPLink %s: %s\n", m_ipAddress.c_str(), error.c_str());
+        LogDebug(VB_PLUGIN, "TPLink %s: %s\n", GetLabel().c_str(), error.c_str());
         return std::string();
     }
     return reply;

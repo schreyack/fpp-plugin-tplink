@@ -30,7 +30,7 @@ BaseItem::~BaseItem() {
 }
 
 std::string BaseItem::GetConfigString() const {
-    return "IP: " + GetIPAddress() + " Start Channel: " + std::to_string(GetStartChannel()) + " Device Type: " + GetType();
+    return "Name: " + GetName() + " IP: " + GetIPAddress() + " Start Channel: " + std::to_string(GetStartChannel()) + " Device Type: " + GetType();
 }
 
 

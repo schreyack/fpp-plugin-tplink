@@ -92,7 +92,7 @@ std::string TPLinkSwitch::appendPlugData(std::string const& cmd, std::atomic<boo
         }
     }
     if (id.empty()) {
-        LogInfo(VB_PLUGIN, "DeviceId is empty for %s \n", m_ipAddress.c_str());
+        LogInfo(VB_PLUGIN, "DeviceId is empty for %s \n", GetLabel().c_str());
     }
     return tplink::kasa::addressedCommand(cmd, m_plug_num, id);
 }

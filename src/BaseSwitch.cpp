@@ -71,7 +71,7 @@ void BaseSwitch::StartSequenceControl() {
         sequence->start();
         m_sequence = std::move(sequence);
     } catch (std::exception const& ex) {
-        LogInfo(VB_PLUGIN, "Could not start sequence control for %s: %s\n", m_ipAddress.c_str(), ex.what());
+        LogInfo(VB_PLUGIN, "Could not start sequence control for %s: %s\n", GetLabel().c_str(), ex.what());
     }
 }
 
@@ -101,13 +101,13 @@ bool BaseSwitch::sendForSequence(bool on, std::atomic<bool> const& stop) {
     const bool ok = sendRelayState(on, stop);
     if (ok) {
         if (m_failedTries > 0) {
-            LogInfo(VB_PLUGIN, "Switched %s %s after %u failed tries\n", m_ipAddress.c_str(), on ? "on" : "off",
+            LogInfo(VB_PLUGIN, "Switched %s %s after %u failed tries\n", GetLabel().c_str(), on ? "on" : "off",
                     m_failedTries);
         }
         m_failedTries = 0;
     } else if (!stop.load()) {
         if (m_failedTries == 0) {
-            LogInfo(VB_PLUGIN, "Could not switch %s %s; retrying for up to %s\n", m_ipAddress.c_str(),
+            LogInfo(VB_PLUGIN, "Could not switch %s %s; retrying for up to %s\n", GetLabel().c_str(),
                     on ? "on" : "off", describeWindow(tplink::RelaySender::defaultTiming().giveUpAfter).c_str());
         }
         ++m_failedTries;
@@ -117,6 +117,6 @@ bool BaseSwitch::sendForSequence(bool on, std::atomic<bool> const& stop) {
 
 void BaseSwitch::gaveUpForSequence(bool on, unsigned tries, std::chrono::milliseconds window) {
     LogInfo(VB_PLUGIN, "Gave up switching %s %s after %u tries over %s; the next change on its channel will try again\n",
-            m_ipAddress.c_str(), on ? "on" : "off", tries, describeWindow(window).c_str());
+            GetLabel().c_str(), on ? "on" : "off", tries, describeWindow(window).c_str());
     m_failedTries = 0;
 }

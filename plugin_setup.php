@@ -45,6 +45,7 @@ function AddTPLinkItem(type) {
         html += " oddRow'";
     }
     html += "'><td class='colNumber rowNumber'>" + id + ".</td><td><span style='display: none;' class='uniqueId'>" + uniqueId + "</span></td>";
+    html += "<td><input type='text' size='24' class='devname' placeholder='Name' /></td>";
     html += "<td><input type='text' minlength='7' maxlength='15' size='15' pattern='^((\d{1,2}|1\d\d|2[0-4]\d|25[0-5])\.){3}(\d{1,2}|1\d\d|2[0-4]\d|25[0-5])$' class='ipaddress' /></td>";
     html += "<td><input type='number' value='0' min='0' max='10000000' class='startchan' />";
     html += "<td><select class='devicetype'>";
@@ -90,14 +91,16 @@ function SaveTPLinkItem(row) {
     var username = $(row).find('.username').val();
     var password = $(row).find('.password').val();
 
-    var json = {
-        "ip": ip,
-        "startchannel": startchan,
-        "devicetype": devicetype,
-        "plugnumber": plugnum,
-        "username": username,
-        "password": password
-    };
+    // Start from the entry as it was loaded, so fields this page does not
+    // show (DMXLive Studio's "enabled", for one) are kept.
+    var json = $.extend({}, $(row).data('orig') || {});
+    json["name"] = $.trim($(row).find('.devname').val());
+    json["ip"] = ip;
+    json["startchannel"] = startchan;
+    json["devicetype"] = devicetype;
+    json["plugnumber"] = plugnum;
+    json["username"] = username;
+    json["password"] = password;
     return json;
 }
 
@@ -107,6 +110,30 @@ function SaveTPLinkItems() {
     $("#tplinkTableBody > tr").each(function() {
         tplinkConfig[i++] = SaveTPLinkItem(this);
     });
+
+    // Commands and playlists find a device by its name, so every device
+    // needs one, no two may share one, and a comma would split it in two.
+    var problems = [];
+    var seen = {};
+    $.each(tplinkConfig, function(idx, item) {
+        var n = item["name"];
+        if (n == "") {
+            problems.push("Row " + (idx + 1) + " has no name.");
+            return;
+        }
+        if (n.indexOf(",") >= 0) {
+            problems.push("'" + n + "' has a comma in it.");
+        }
+        var key = n.toLowerCase();
+        if (seen[key]) {
+            problems.push("'" + n + "' is used more than once.");
+        }
+        seen[key] = true;
+    });
+    $('#tplinkProblems').text(problems.join(" ")).toggle(problems.length > 0);
+    if (problems.length > 0) {
+        return;
+    }
     
     var data = JSON.stringify(tplinkConfig);
     $.ajax({
@@ -185,21 +212,25 @@ $(document).ready(function() {
 <div class='fppTableWrapper fppTableWrapperAsTable'>
 <div class='fppTableContents'>
 <table class="fppSelectableRowTable" id="tplinkTable"  width='100%'>
-<thead><tr class="fppTableHeader"><th>#</th><th></th><th>IP</th><th>Start Chan</th><th>Device Type</th><th>Plug ID</th><th>Username</th><th>Password</th></tr></thead>
+<thead><tr class="fppTableHeader"><th>#</th><th></th><th>Name</th><th>IP</th><th>Start Chan</th><th>Device Type</th><th>Plug ID</th><th>Username</th><th>Password</th></tr></thead>
 <tbody id='tplinkTableBody'>
 </tbody>
 </table>
 </div>
 
 </div>
+<div id='tplinkProblems' style='display: none; color: #c00; font-weight: bold;'></div>
 <div>
 <p><b>Plugs and switches in a sequence:</b> a start channel means the sequence owns the plug. When a playlist starts, the plug is sent the channel's state on the first frame. After that the plugin sends only when the state changes (127 or more is on, below 127 is off). Leave the start channel at 0 for plugs you control with commands (playlist lead-ins, Home Assistant).</p>
+<p><b>Names:</b> commands and playlists pick a device by its name, so give every device a unique name. The IP is only used here.</p>
 </div>
 </div>
 <script>
 
 $.each(tplinkConfig, function( key, val ) {
     var row = AddTPLinkItem(val["devicetype"]);
+    $(row).data('orig', val);
+    $(row).find('.devname').val(val["name"]);
     $(row).find('.ipaddress').val(val["ip"]);
     $(row).find('.startchan').val(val["startchannel"]);
     $(row).find('.plugnum').val(val["plugnumber"]);
