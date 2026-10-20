@@ -85,8 +85,12 @@ private:
 
     // The channels that are held (0-based) and the work on a frame. Populated at
     // startup from configured switches whose 1-based start channel is non-zero,
-    // however many there are (src/core/EffectsHold.h).
+    // however many there are, and from the DMX effect machines the config lists
+    // (the "effectchannels" entry): those go out at 0 and are not put back
+    // (src/core/EffectsHold.h).
     tplink::EffectsHold m_effectsHold;
+    // Set when the config has an "effectchannels" entry, so a config without one is said so.
+    bool m_effectChannelsListed = false;
 
     static std::string effectsHeldPath() {
 #if FPP_MAJOR_VERSION < 6
@@ -791,6 +795,37 @@ public:
         outfile.close();
     }
 
+    // The "effectchannels" entry of plugin.tplink.json, written by Studio from the rig's fog
+    // fixtures: {"effectchannels": [{"name": "...", "first": N, "count": M}, ...]}, `first` the
+    // 1-based FPP channel. While the hold is on these channels go out at 0 (EffectsHold). A range
+    // that is not whole is named in the log and left out; the others still hold.
+    void readEffectChannels(Json::Value const& entry)
+    {
+        m_effectChannelsListed = true;
+        Json::Value const& list = entry["effectchannels"];
+        if (!list.isArray()) {
+            LogErr(VB_PLUGIN, "TPLink: the effectchannels entry has no list, so no DMX effect machine is held\n");
+            return;
+        }
+        for (Json::Value const& range : list) {
+            if (!range.isObject() || !range["first"].isUInt64() || !range["count"].isUInt64()) {
+                LogErr(VB_PLUGIN, "TPLink: an effectchannels range is not held: it needs a whole-number first and count\n");
+                continue;
+            }
+            std::string const name = range.get("name", "").asString();
+            unsigned long const first = static_cast<unsigned long>(range["first"].asUInt64());
+            unsigned long const count = static_cast<unsigned long>(range["count"].asUInt64());
+            std::string why;
+            if (m_effectsHold.addZeroedRange(first, count, FPPD_MAX_CHANNELS, why)) {
+                LogInfo(VB_PLUGIN, "Effect channels held at 0 while effects are held: '%s' %lu-%lu\n",
+                        name.c_str(), first, first + count - 1);
+            } else {
+                LogErr(VB_PLUGIN, "TPLink: effect channels '%s' (%lu, %lu) not held: %s\n",
+                       name.c_str(), first, count, why.c_str());
+            }
+        }
+    }
+
     void readFiles()
     {
         //read topic, payload and start channel settings from JSON setting file.
@@ -803,6 +838,11 @@ public:
             for (unsigned int i = 0; i < config.size(); i++) {
                 std::string const ip = config[i]["ip"].asString();
                 std::string const devicetype = config[i].get("devicetype","light").asString();
+                if (devicetype == "effectchannels") {
+                    // Not a device: Studio's list of the DMX effect machines (fog, smoke).
+                    readEffectChannels(config[i]);
+                    continue;
+                }
                 unsigned int sc =  config[i].get("startchannel",1).asInt();
                 if(!ip.empty()) {
                     std::unique_ptr<BaseItem> tplinkItem;
@@ -866,6 +906,9 @@ public:
             }
         }
         m_effectsHold.setChannels(std::move(effectPlugChannels));
+        if (!m_effectChannelsListed) {
+            LogWarn(VB_PLUGIN, "TPLink: plugin.tplink.json has no effectchannels entry, so the effects hold keeps the effect plugs off but does not zero any DMX effect machine\n");
+        }
         if (!m_effectsHold.channels().empty()) {
             LogInfo(VB_PLUGIN, "Effect plug channels (1-based):");
             for (unsigned int idx : m_effectsHold.channels()) {

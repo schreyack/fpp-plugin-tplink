@@ -26,6 +26,17 @@ DMXLive Studio writes `plugin.tplink.json`, names included. The setup page keeps
 
 `tools/migrate_playlists_to_names.py --host <fpp>` rewrites playlists saved with the old IP form to names. It changes nothing without `--apply --backup-dir <dir>`.
 
+## The effects hold and the DMX effect machines
+
+While the effects hold is on (`/api/plugin-apis/TPLink/effects-hold`, `{"held": true}`; it defaults to held and survives restarts), the effect plugs read 0 to the switches, and the DMX effect machines (fog, smoke) go out at 0 to the controllers. A plug's channel is put back after the switches have read it; a DMX machine's channels are not, because the frame is what the controllers get.
+
+The machines come from one entry in `plugin.tplink.json`, written by DMXLive Studio from the rig's fog fixtures, with `first` the 1-based FPP channel:
+
+    {"name": "Effect channels", "devicetype": "effectchannels",
+     "effectchannels": [{"name": "Ground Fog 1", "first": 78477, "count": 1}]}
+
+The entry is not a device. The setup page leaves it out of the rows and writes it back as it was. A range that is not whole (past the last channel FPP has) is named in the fppd log and left out; the others still hold. A config with no such entry is said so in the log. Read at startup: restart fppd after the file changes.
+
 ## Tests
 
 The flip rule, the per-plug sender, the device names and the Kasa protocol code live in `src/core` and build without FPP. `make -C tests` builds and runs their unit tests on macOS or Linux, against a fake plug on 127.0.0.1.
