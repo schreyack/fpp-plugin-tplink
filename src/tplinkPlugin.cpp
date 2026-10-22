@@ -59,7 +59,6 @@
 #include "TapoSwitch.h"
 
 #include "core/DeviceNames.h"
-#include "core/EffectsHold.h"
 #include "core/KasaProtocol.h"
 #include "core/RelaySender.h"
 
@@ -75,67 +74,10 @@ private:
     // Set at shutdown so detached toggle threads give up promptly.
     std::atomic<bool> m_shuttingDown{false};
 
-    // --- Effects hold ---
-    // When held, the plugin treats the effect plugs' channels as zero in
-    // sendChannelData, preventing the show's effect cues from switching
-    // the plugs. The hold defaults to ON (fail safe: effects do not fire)
-    // and survives restarts via a state file. The house controller sets it
-    // through the /TPLink/effects-hold API or the FPP Command.
-    std::atomic<bool> m_effectsHeld{true};
-
-    // The channels that are held (0-based) and the work on a frame. Populated at
-    // startup from configured switches whose 1-based start channel is non-zero,
-    // however many there are, and from the DMX effect machines the config lists
-    // (the "effectchannels" entry): those go out at 0 and are not put back
-    // (src/core/EffectsHold.h).
-    tplink::EffectsHold m_effectsHold;
-    // Set when the config has an "effectchannels" entry, so a config without one is said so.
-    bool m_effectChannelsListed = false;
-
-    static std::string effectsHeldPath() {
-#if FPP_MAJOR_VERSION < 6
-        return "/home/fpp/media/config/fpp-plugin-tplink-effects-held";
-#else
-        return std::string(FPP_DIR_CONFIG("/fpp-plugin-tplink-effects-held"));
-#endif
-    }
-
-    void loadEffectsHeld() {
-        try {
-            std::ifstream f(effectsHeldPath());
-            if (f.is_open()) {
-                std::string line;
-                if (std::getline(f, line)) {
-                    bool held = (line != "0");
-                    m_effectsHeld.store(held, std::memory_order_relaxed);
-                    LogInfo(VB_PLUGIN, "Effects hold loaded: %s\n", held ? "held" : "released");
-                    return;
-                }
-            }
-        } catch (...) {}
-        // Missing or unreadable: default to held (fail safe).
-        m_effectsHeld.store(true, std::memory_order_relaxed);
-        LogInfo(VB_PLUGIN, "Effects hold state file missing or unreadable; defaulting to held\n");
-    }
-
-    bool saveEffectsHeld(bool held) {
-        try {
-            std::ofstream f(effectsHeldPath());
-            if (f.is_open()) {
-                f << (held ? "1" : "0") << "\n";
-                f.close();
-                return true;
-            }
-        } catch (...) {}
-        LogInfo(VB_PLUGIN, "Could not save effects hold state\n");
-        return false;
-    }
-
 public:
     TPLinkPlugin() : FPPPlugin("fpp-plugin-tplink") {
         LogInfo(VB_PLUGIN, "Initializing TP-Link Plugin\n");
         readFiles();
-        loadEffectsHeld();
         registerCommand();
     }
     virtual ~TPLinkPlugin() {
@@ -214,17 +156,6 @@ public:
         Json::StreamWriterBuilder wb;
         wb["indentation"] = "";
         return Json::writeString(wb, names);
-    }
-
-    // --- Effects hold public API ---
-    bool isEffectsHeld() const {
-        return m_effectsHeld.load(std::memory_order_relaxed);
-    }
-
-    void setEffectsHeld(bool held) {
-        m_effectsHeld.store(held, std::memory_order_relaxed);
-        saveEffectsHeld(held);
-        LogInfo(VB_PLUGIN, "Effects hold set to: %s\n", held ? "held" : "released");
     }
 
     // Every command names its device the way plugin.tplink.json does
@@ -545,23 +476,6 @@ public:
         TPLinkPlugin *plugin;
     };
 
-    // FPP Command: hold or release the effect plugs.
-    class TPLinkEffectsHoldCommand : public Command {
-    public:
-        TPLinkEffectsHoldCommand(TPLinkPlugin *p) : Command("TPLink Effects Hold"), plugin(p) {
-            args.push_back(CommandArg("held", "bool", "Hold effects off").setDefaultValue("true"));
-        }
-        virtual std::unique_ptr<Command::Result> run(const std::vector<std::string> &args) override {
-            bool held = true;
-            if (args.size() >= 1) {
-                held = (args[0] == "true" || args[0] == "1");
-            }
-            plugin->setEffectsHeld(held);
-            return std::make_unique<Command::Result>(held ? "Effects held" : "Effects released");
-        }
-        TPLinkPlugin *plugin;
-    };
-
     void registerCommand() {
         _commands.push_back(new TPLinkSetSwitchCommand(this));
         _commands.push_back(new TPLinkToggleSwitchCommand(this));
@@ -574,7 +488,6 @@ public:
         _commands.push_back(new TPLinkAllLightsHSVCommand(this));
         _commands.push_back(new TPLinkAllLightsOffCommand(this));
         _commands.push_back(new TPLinkAllSwitchesToggleCommand(this));
-        _commands.push_back(new TPLinkEffectsHoldCommand(this));
         for (Command* c : _commands) {
             CommandManager::INSTANCE.addCommand(c);
         }
@@ -605,40 +518,8 @@ public:
         callback(makeStringResponse(getTopics(), 200));
     }
 
-    void handleEffectsHoldRequest(const HttpRequestPtr &req,
-                                   std::function<void(const HttpResponsePtr &)> &&callback) {
-        if (req->getMethod() == drogon::Get) {
-            Json::Value resp;
-            resp["held"] = isEffectsHeld();
-            Json::StreamWriterBuilder wb;
-            wb["indentation"] = "";
-            callback(makeStringResponse(Json::writeString(wb, resp), 200, "application/json"));
-        } else if (req->getMethod() == drogon::Put || req->getMethod() == drogon::Post) {
-            Json::Value body;
-            Json::CharReaderBuilder rb;
-            std::string errs;
-            auto bodyView = req->getBody();
-            std::string bodyStr(bodyView.data(), bodyView.size());
-            std::istringstream ss(bodyStr);
-            if (Json::parseFromStream(rb, ss, &body, &errs) && body.isMember("held")) {
-                bool held = body["held"].asBool();
-                setEffectsHeld(held);
-                Json::Value resp;
-                resp["held"] = held;
-                Json::StreamWriterBuilder wb;
-                wb["indentation"] = "";
-                callback(makeStringResponse(Json::writeString(wb, resp), 200, "application/json"));
-            } else {
-                callback(makeStringResponse("{\"error\":\"expected JSON with a 'held' field\"}", 400, "application/json"));
-            }
-        } else {
-            callback(makeStringResponse("{\"error\":\"use GET or PUT\"}", 405, "application/json"));
-        }
-    }
-
     void unregisterApis() override {
         FPPPlugins::unregisterPluginApi("/TPLink");
-        FPPPlugins::unregisterPluginApi("/TPLink/effects-hold");
         FPPPlugins::unregisterPluginApi("/TPLink/switches");
         FPPPlugins::unregisterPluginApi("/TPLink/lights");
     }
@@ -649,12 +530,6 @@ public:
                 handleTopicsRequest(req, std::move(callback));
             },
             { drogon::Get });
-        FPPPlugins::registerPluginApi(
-            "/TPLink/effects-hold",
-            [this](const HttpRequestPtr &req, std::function<void(const HttpResponsePtr &)> &&callback) {
-                handleEffectsHoldRequest(req, std::move(callback));
-            },
-            { drogon::Get, drogon::Put, drogon::Post });
         // The names behind the commands' device dropdowns (a JSON array).
         FPPPlugins::registerPluginApi(
             "/TPLink/switches",
@@ -672,11 +547,8 @@ public:
 
     // Plugs follow the channel data FPP is about to SEND, after pixel overlays
     // (modifyChannelData), not the raw sequence (modifySequenceData, which runs
-    // before overlays). While the effects hold is on, the plugin zeroes the
-    // effect plugs' channels before passing them to the switches, so the show's
-    // cues cannot fire those plugs. This replaces the old overlay-based gate,
-    // which kept FPP's channel output thread alive and caused dark frames to
-    // interleave with DMXLive's DDP output = blink.
+    // before overlays). Whatever turns effects off lives above this plugin: it zeroes
+    // the show's data upstream, and this plugin only switches from the frame it sees.
     virtual void modifyChannelData(int ms, uint8_t *seqData) override {
         try
         {
@@ -703,17 +575,10 @@ public:
     // Runs on fppd's output thread for every frame. Each output's SendData is a
     // compare, plus a hand-off or a thread start when its value changes, so a
     // plain loop is all this needs.
-    //
-    // When effects are held, the effect plugs' channels are temporarily zeroed
-    // in the data buffer so every switch sees 0 and stays off. The buffer is
-    // restored afterwards so downstream plugins are unaffected. Every effect plug
-    // is held, however many there are (src/core/EffectsHold.h).
     void sendChannelData(unsigned char *data) {
-        m_effectsHold.apply(data, m_effectsHeld.load(std::memory_order_relaxed), [this](uint8_t* frame) {
-            for (auto& output : _TPLinkOutputs) {
-                output->SendData(frame);
-            }
-        });
+        for (auto& output : _TPLinkOutputs) {
+            output->SendData(data);
+        }
     }
 
     void turnSwitchesOff() {
@@ -795,37 +660,6 @@ public:
         outfile.close();
     }
 
-    // The "effectchannels" entry of plugin.tplink.json, written by Studio from the rig's fog
-    // fixtures: {"effectchannels": [{"name": "...", "first": N, "count": M}, ...]}, `first` the
-    // 1-based FPP channel. While the hold is on these channels go out at 0 (EffectsHold). A range
-    // that is not whole is named in the log and left out; the others still hold.
-    void readEffectChannels(Json::Value const& entry)
-    {
-        m_effectChannelsListed = true;
-        Json::Value const& list = entry["effectchannels"];
-        if (!list.isArray()) {
-            LogErr(VB_PLUGIN, "TPLink: the effectchannels entry has no list, so no DMX effect machine is held\n");
-            return;
-        }
-        for (Json::Value const& range : list) {
-            if (!range.isObject() || !range["first"].isUInt64() || !range["count"].isUInt64()) {
-                LogErr(VB_PLUGIN, "TPLink: an effectchannels range is not held: it needs a whole-number first and count\n");
-                continue;
-            }
-            std::string const name = range.get("name", "").asString();
-            unsigned long const first = static_cast<unsigned long>(range["first"].asUInt64());
-            unsigned long const count = static_cast<unsigned long>(range["count"].asUInt64());
-            std::string why;
-            if (m_effectsHold.addZeroedRange(first, count, FPPD_MAX_CHANNELS, why)) {
-                LogInfo(VB_PLUGIN, "Effect channels held at 0 while effects are held: '%s' %lu-%lu\n",
-                        name.c_str(), first, first + count - 1);
-            } else {
-                LogErr(VB_PLUGIN, "TPLink: effect channels '%s' (%lu, %lu) not held: %s\n",
-                       name.c_str(), first, count, why.c_str());
-            }
-        }
-    }
-
     void readFiles()
     {
         //read topic, payload and start channel settings from JSON setting file.
@@ -839,8 +673,8 @@ public:
                 std::string const ip = config[i]["ip"].asString();
                 std::string const devicetype = config[i].get("devicetype","light").asString();
                 if (devicetype == "effectchannels") {
-                    // Not a device: Studio's list of the DMX effect machines (fog, smoke).
-                    readEffectChannels(config[i]);
+                    // An old file can still carry this entry; it is not a device.
+                    LogInfo(VB_PLUGIN, "TPLink: skipping the old effectchannels entry in plugin.tplink.json; it is not a device and this plugin holds nothing\n");
                     continue;
                 }
                 unsigned int sc =  config[i].get("startchannel",1).asInt();
@@ -895,26 +729,6 @@ public:
             }
         }
 
-        // Build the list of effect plug channel indices (0-based). A switch
-        // with a non-zero start channel that falls in the effect plug range
-        // is held when the effects hold is active.
-        std::vector<unsigned int> effectPlugChannels;
-        for (auto& output : _TPLinkOutputs) {
-            unsigned int sc = output->GetStartChannel();
-            if (sc != 0 && dynamic_cast<BaseSwitch*>(output.get())) {
-                effectPlugChannels.push_back(sc - 1);  // 0-based index
-            }
-        }
-        m_effectsHold.setChannels(std::move(effectPlugChannels));
-        if (!m_effectChannelsListed) {
-            LogWarn(VB_PLUGIN, "TPLink: plugin.tplink.json has no effectchannels entry, so the effects hold keeps the effect plugs off but does not zero any DMX effect machine\n");
-        }
-        if (!m_effectsHold.channels().empty()) {
-            LogInfo(VB_PLUGIN, "Effect plug channels (1-based):");
-            for (unsigned int idx : m_effectsHold.channels()) {
-                LogInfo(VB_PLUGIN, "  %u\n", idx + 1);
-            }
-        }
     }
 
     std::string getTopics()

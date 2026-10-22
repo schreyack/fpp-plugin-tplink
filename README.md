@@ -20,22 +20,15 @@ In more detail, for TPLink Switch/Plug, Tasmota Switch and Tapo Switch entries:
 
 Every device in the config has a name ("LED Roof"). Commands and playlists pick a device by that name, never by its IP: TPLink Set Switch, Toggle Switch, Set Light RGB, HSV and Off each take a device, chosen from a list of the configured switches or lights (a comma list of names also works). Names ignore case but must be unique. The IP, plug number and device type live only in the config. A name the config does not have, or an IP, does nothing and says so in the log.
 
-The lists behind the dropdowns are `GET /api/plugin-apis/TPLink/switches` and `/lights`. The All Switches and All Lights commands, and the effects hold (`/api/plugin-apis/TPLink/effects-hold`), are unchanged.
+The lists behind the dropdowns are `GET /api/plugin-apis/TPLink/switches` and `/lights`. The All Switches and All Lights commands are unchanged.
 
 DMXLive Studio writes `plugin.tplink.json`, names included. The setup page keeps every field Studio writes when it saves.
 
 `tools/migrate_playlists_to_names.py --host <fpp>` rewrites playlists saved with the old IP form to names. It changes nothing without `--apply --backup-dir <dir>`.
 
-## The effects hold and the DMX effect machines
+## No effects hold here
 
-While the effects hold is on (`/api/plugin-apis/TPLink/effects-hold`, `{"held": true}`; it defaults to held and survives restarts), the effect plugs read 0 to the switches, and the DMX effect machines (fog, smoke) go out at 0 to the controllers. A plug's channel is put back after the switches have read it; a DMX machine's channels are not, because the frame is what the controllers get.
-
-The machines come from one entry in `plugin.tplink.json`, written by DMXLive Studio from the rig's fog fixtures, with `first` the 1-based FPP channel:
-
-    {"name": "Effect channels", "devicetype": "effectchannels",
-     "effectchannels": [{"name": "Ground Fog 1", "first": 78477, "count": 1}]}
-
-The entry is not a device. The setup page leaves it out of the rows and writes it back as it was. A range that is not whole (past the last channel FPP has) is named in the fppd log and left out; the others still hold. A config with no such entry is said so in the log. Read at startup: restart fppd after the file changes.
+This plugin holds nothing. It switches plugs from the frame FPP sends it, after overlays, and a plug with a start channel follows its channel. Any hold on effects (HA's Effects toggle) lives above the plugin, in fpp-plugin-dmxlive, which zeroes the show's data before the frame reaches this plugin; the old `/TPLink/effects-hold` API, the "TPLink Effects Hold" command and the `effectchannels` entry in `plugin.tplink.json` are gone. An old `effectchannels` entry in the file is skipped (one log line) and the setup page drops it on save.
 
 ## Tests
 

@@ -34,7 +34,6 @@
 
 # Unit test binary
 tests/tplink_tests
-tests/effects_hold_tests
 tests/device_names_tests
 tests/*.dSYM/
 

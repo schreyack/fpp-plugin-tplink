@@ -37,8 +37,6 @@ var tplinkConfig = <? echo json_encode($pluginJson, JSON_PRETTY_PRINT); ?>;
 
 
 var uniqueId = 1;
-// Entries that are not devices (devicetype "effectchannels"), kept out of the rows.
-var tplinkEffectEntries = [];
 var modelOptions = "";
 function AddTPLinkItem(type) {
     var id = $("#tplinkTableBody > tr").length + 1;
@@ -137,9 +135,7 @@ function SaveTPLinkItems() {
         return;
     }
     
-    // Studio's list of the DMX effect machines the effects hold zeroes is not a device row:
-    // it goes back exactly as it was loaded, after the devices.
-    var data = JSON.stringify(tplinkConfig.concat(tplinkEffectEntries));
+    var data = JSON.stringify(tplinkConfig);
     $.ajax({
         type: "POST",
 	url: 'api/configfile/plugin.tplink.json',
@@ -233,8 +229,7 @@ $(document).ready(function() {
 
 $.each(tplinkConfig, function( key, val ) {
     if (val["devicetype"] == "effectchannels") {
-        tplinkEffectEntries.push(val);
-        return;
+        return;  // an old file's entry: not a device, and saving drops it
     }
     var row = AddTPLinkItem(val["devicetype"]);
     $(row).data('orig', val);
